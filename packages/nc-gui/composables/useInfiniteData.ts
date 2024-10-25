@@ -86,26 +86,45 @@ export function useInfiniteData(args: {
 
   const { getBaseType } = useBase()
 
-  const syncLocalChunks = (index: number, operation: 'create' | 'delete') => {
-    const affectedChunk = Math.floor(index / CHUNK_SIZE)
+  const updateChunkStates = (deletedIndices: Set<number>, minAffectedIndex: number, operation: 'create' | 'delete') => {
+    const maxChunk = Math.floor((totalRows.value - 1) / CHUNK_SIZE)
+    const affectedChunk = Math.floor(minAffectedIndex / CHUNK_SIZE)
 
     if (operation === 'create') {
       chunkStates.value[affectedChunk] = 'loaded'
-    } else if (operation === 'delete') {
-      const chunkStart = affectedChunk * CHUNK_SIZE
-      const chunkEnd = (affectedChunk + 1) * CHUNK_SIZE
-      const hasRowsInChunk = [...cachedRows.value.keys()].some((i) => i >= chunkStart && i < chunkEnd)
-      chunkStates.value[affectedChunk] = hasRowsInChunk ? 'loaded' : undefined
+      return
     }
 
-    const lastChunk = Math.floor((cachedRows.value.size - 1) / CHUNK_SIZE)
-    const cachedKeys = [...cachedRows.value.keys()]
-    for (let i = affectedChunk + 1; i <= lastChunk; i++) {
-      const chunkStart = i * CHUNK_SIZE
-      const chunkEnd = (i + 1) * CHUNK_SIZE
-      const hasRowsInChunk = cachedKeys.some((index) => index >= chunkStart && index < chunkEnd)
-      chunkStates.value[i] = hasRowsInChunk ? 'loaded' : undefined
+    const newCachedRows = new Map<number, Row>()
+    let newIndex = 0
+
+    const sortedEntries = Array.from(cachedRows.value.entries()).sort(([indexA], [indexB]) => indexA - indexB)
+
+    for (const [oldIndex, row] of sortedEntries) {
+      if (!deletedIndices.has(oldIndex)) {
+        const updatedRow = { ...row }
+        updatedRow.rowMeta = { ...updatedRow.rowMeta, rowIndex: newIndex }
+        newCachedRows.set(newIndex, updatedRow)
+        newIndex++
+      }
     }
+
+    cachedRows.value = newCachedRows
+
+    const newChunkStates = new Array(maxChunk + 1).fill(undefined)
+
+    for (let chunk = 0; chunk <= maxChunk; chunk++) {
+      const chunkStart = chunk * CHUNK_SIZE
+      const chunkEnd = (chunk + 1) * CHUNK_SIZE - 1
+
+      const hasRowsInChunk = [...newCachedRows.keys()].some((index) => index >= chunkStart && index <= chunkEnd)
+
+      if ((chunk >= affectedChunk && hasRowsInChunk) || (chunkStates.value[chunk] === 'loaded' && hasRowsInChunk)) {
+        newChunkStates[chunk] = 'loaded'
+      }
+    }
+
+    chunkStates.value = newChunkStates
   }
 
   const clearCache = (visibleStartIndex: number, visibleEndIndex: number) => {
@@ -123,28 +142,35 @@ export function useInfiniteData(args: {
     const safeEndChunk = Math.floor(safeEndIndex / CHUNK_SIZE)
 
     const newCachedRows = new Map<number, Row>()
-    let keptCount = 0
-
     cachedRows.value.forEach((row, index) => {
       const chunk = Math.floor(index / CHUNK_SIZE)
-      if (
-        (chunk >= safeStartChunk && chunk <= safeEndChunk) ||
-        row.rowMeta.selected ||
-        row.rowMeta.new ||
-        keptCount < MAX_CACHE_SIZE
-      ) {
+      if ((chunk >= safeStartChunk && chunk <= safeEndChunk) || row.rowMeta.selected || row.rowMeta.new) {
         newCachedRows.set(index, row)
-        keptCount++
       }
     })
 
+    if (newCachedRows.size < MAX_CACHE_SIZE) {
+      cachedRows.value.forEach((row, index) => {
+        if (!newCachedRows.has(index) && newCachedRows.size < MAX_CACHE_SIZE) {
+          newCachedRows.set(index, row)
+        }
+      })
+    }
+
     cachedRows.value = newCachedRows
 
-    chunkStates.value = chunkStates.value.map((state, chunkId) =>
-      chunkId >= safeStartChunk && chunkId <= safeEndChunk ? state : undefined,
-    )
-  }
+    const maxIndex = Math.max(...newCachedRows.keys(), -1)
+    const maxChunk = Math.floor(maxIndex / CHUNK_SIZE)
 
+    chunkStates.value = chunkStates.value.map((_, chunkId) => {
+      if (chunkId > maxChunk) return undefined
+
+      const chunkStart = chunkId * CHUNK_SIZE
+      const chunkEnd = (chunkId + 1) * CHUNK_SIZE - 1
+      const hasRowsInChunk = [...newCachedRows.keys()].some((index) => index >= chunkStart && index <= chunkEnd)
+      return hasRowsInChunk ? 'loaded' : undefined
+    })
+  }
   const selectedRows = computed<Row[]>(() => {
     return Array.from(cachedRows.value.values()).filter((row) => row.rowMeta?.selected)
   })
@@ -179,7 +205,7 @@ export function useInfiniteData(args: {
 
     totalRows.value = Math.max(0, (totalRows.value || 0) - invalidIndexes.length)
 
-    syncLocalChunks(Math.min(...invalidIndexes), 'delete')
+    updateChunkStates(new Set(invalidIndexes), Math.min(...invalidIndexes), 'delete')
     callbacks?.syncVisibleData?.()
   }
 
@@ -457,8 +483,7 @@ export function useInfiniteData(args: {
         cachedRows.value.delete(index)
         cachedRows.value.set(newIndex, row)
       }
-
-      syncLocalChunks(rowIndex, 'delete')
+      updateChunkStates(new Set([rowIndex]), rowIndex, 'delete')
       totalRows.value = (totalRows.value || 0) - 1
 
       await syncCount()
@@ -519,23 +544,10 @@ export function useInfiniteData(args: {
       return message.error(`${t('msg.error.deleteRowFailed')}: ${errorMessage}`)
     }
 
-    const deletedIndexes = removedRowsData.map((row) => row.rowMeta.rowIndex).sort((a, b) => b - a)
-    const deletedIndexSet = new Set(deletedIndexes)
-    const newCachedRows = new Map<number, Row>()
-    let newIndex = 0
-    for (const [oldIndex, row] of cachedRows.value) {
-      if (!deletedIndexSet.has(oldIndex)) {
-        row.rowMeta.rowIndex = newIndex
-        newCachedRows.set(newIndex, row)
-        newIndex++
-      }
-    }
-    cachedRows.value = newCachedRows
+    const deletedIndexes = removedRowsData.map((row) => row.rowMeta.rowIndex)
     totalRows.value = Math.max(0, (totalRows.value || 0) - removedRowsData.length)
 
-    for (const index of deletedIndexes) {
-      syncLocalChunks(index, 'delete')
-    }
+    updateChunkStates(new Set(deletedIndexes), Math.min(...deletedIndexes), 'delete')
 
     addUndo({
       undo: {
@@ -559,24 +571,14 @@ export function useInfiniteData(args: {
       redo: {
         fn: async (toBeRemovedData: Record<string, any>[]) => {
           await bulkDeleteRows(toBeRemovedData.map((row) => row.pkData))
-          // Need to update the cached rows
-          const deletedIndexes = toBeRemovedData.map((row) => row.rowMeta.rowIndex).sort((a, b) => b - a)
-          const deletedIndexSet = new Set(deletedIndexes)
-          const newCachedRows = new Map<number, Row>()
-          let newIndex = 0
-          for (const [oldIndex, row] of cachedRows.value) {
-            if (!deletedIndexSet.has(oldIndex)) {
-              row.rowMeta.rowIndex = newIndex
-              newCachedRows.set(newIndex, row)
-              newIndex++
-            }
-          }
-          cachedRows.value = newCachedRows
-          totalRows.value = Math.max(0, (totalRows.value || 0) - removedRowsData.length)
 
-          for (const index of deletedIndexes) {
-            syncLocalChunks(index, 'delete')
-          }
+          const deletedIndexes = toBeRemovedData.map((row) => row.rowMeta.rowIndex)
+          totalRows.value = Math.max(0, (totalRows.value || 0) - toBeRemovedData.length)
+
+          updateChunkStates(new Set(deletedIndexes), Math.min(...deletedIndexes), 'delete')
+
+          await syncCount()
+          callbacks?.syncVisibleData?.()
         },
         args: [removedRowsData],
       },
@@ -673,7 +675,7 @@ export function useInfiniteData(args: {
       }
 
       cachedRows.value.set(insertIndex, currentRow)
-      syncLocalChunks(insertIndex, 'create')
+      updateChunkStates(new Set([insertIndex]), insertIndex, 'create')
 
       if (!ignoreShifting) {
         totalRows.value++
@@ -746,7 +748,13 @@ export function useInfiniteData(args: {
         newCachedRows.set(index, { ...row, rowMeta: { ...row.rowMeta, rowIndex: index } })
       }
 
+      let minAffectedIndex = Infinity
+
       for (const { insertObj, rowIndex } of validRowsToInsert) {
+        if (rowIndex < minAffectedIndex) {
+          minAffectedIndex = rowIndex
+        }
+
         // If there's already a row at this index, shift it and all subsequent rows
         if (newCachedRows.has(rowIndex!)) {
           const rowsToShift = Array.from(newCachedRows.entries())
@@ -755,12 +763,18 @@ export function useInfiniteData(args: {
 
           for (const [index, row] of rowsToShift) {
             const newIndex = index + 1
-            newCachedRows.set(newIndex, { ...row, rowMeta: { ...row.rowMeta, rowIndex: newIndex } })
+            newCachedRows.set(newIndex, {
+              ...row,
+              rowMeta: { ...row.rowMeta, rowIndex: newIndex },
+            })
           }
         }
 
         const newRow = {
-          row: { ...insertObj, id: bulkInsertedIds[validRowsToInsert.indexOf({ insertObj, rowIndex })] },
+          row: {
+            ...insertObj,
+            id: bulkInsertedIds[validRowsToInsert.indexOf({ insertObj, rowIndex })],
+          },
           oldRow: {},
           rowMeta: { rowIndex: rowIndex!, new: false },
         }
@@ -771,8 +785,8 @@ export function useInfiniteData(args: {
 
       totalRows.value += validRowsToInsert.length
 
-      for (const { rowIndex } of validRowsToInsert) {
-        syncLocalChunks(rowIndex!, 'create')
+      if (minAffectedIndex !== Infinity) {
+        updateChunkStates(new Set(), minAffectedIndex, 'create')
       }
 
       await syncCount()
@@ -1197,24 +1211,11 @@ export function useInfiniteData(args: {
         fn: async (rowsToDelete: Record<string, any>[]) => {
           await bulkDeleteRows(rowsToDelete.map((row) => row.pkData))
 
-          // Remove rows and shift remaining rows
-          const newCachedRows = new Map<number, Row>()
-          let newIndex = 0
+          const deletedIndexes = rowsToDelete.map((row) => row.rowIndex)
 
-          for (let i = 0; i < Math.max(...cachedRows.value.keys()) + 1; i++) {
-            if (!rowsToDelete.some((row) => row.rowIndex === i) && cachedRows.value.has(i)) {
-              const row = cachedRows.value.get(i)!
-              row.rowMeta.rowIndex = newIndex
-              newCachedRows.set(newIndex, row)
-              newIndex++
-            }
-          }
-
-          cachedRows.value = newCachedRows
           totalRows.value = Math.max(0, totalRows.value - rowsToDelete.length)
 
-          // Update chunks
-          syncLocalChunks(Math.min(...rowsToDelete.map((row) => row.rowIndex)), 'delete')
+          updateChunkStates(new Set(deletedIndexes), Math.min(...deletedIndexes), 'delete')
 
           await syncCount()
           callbacks?.syncVisibleData?.()
@@ -1224,24 +1225,10 @@ export function useInfiniteData(args: {
       scope: defineViewScope({ view: viewMeta.value }),
     })
 
-    // Remove rows and shift remaining rows
-    const newCachedRows = new Map<number, Row>()
-    let newIndex = 0
-
-    for (let i = 0; i < Math.max(...cachedRows.value.keys()) + 1; i++) {
-      if (!rowsToDelete.some((row) => row.rowIndex === i) && cachedRows.value.has(i)) {
-        const row = cachedRows.value.get(i)!
-        row.rowMeta.rowIndex = newIndex
-        newCachedRows.set(newIndex, row)
-        newIndex++
-      }
-    }
-
-    cachedRows.value = newCachedRows
+    const deletedIndexes = rowsToDelete.map((row) => row.rowIndex)
     totalRows.value = Math.max(0, totalRows.value - rowsToDelete.length)
 
-    // Update chunks
-    syncLocalChunks(start, 'delete')
+    updateChunkStates(new Set(deletedIndexes), Math.min(...deletedIndexes), 'delete')
 
     await syncCount()
     callbacks?.syncVisibleData?.()
@@ -1269,7 +1256,7 @@ export function useInfiniteData(args: {
 
     if (index !== undefined && row.rowMeta.new) {
       cachedRows.value.delete(index)
-      syncLocalChunks(index, 'delete')
+      updateChunkStates(new Set([index]), index, 'delete')
       return true
     }
     return false
@@ -1314,7 +1301,7 @@ export function useInfiniteData(args: {
     clearCache,
     syncCount,
     selectedRows,
-    syncLocalChunks,
+    syncLocalChunks: updateChunkStates,
     chunkStates,
     isRowSortRequiredRows,
     clearInvalidRows,
