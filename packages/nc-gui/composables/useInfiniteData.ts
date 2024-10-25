@@ -267,8 +267,10 @@ export function useInfiniteData(args: {
       row,
     }))
 
+    const orderedSorts = [...sorts.value].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+
     rowsArray.sort((a, b) => {
-      for (const sort of sorts.value) {
+      for (const sort of orderedSorts) {
         const column = columnsById.value[sort.fk_column_id!]
         if (!column?.title) continue
 
@@ -280,7 +282,9 @@ export function useInfiniteData(args: {
           options: { direction },
         })
 
-        return comparison
+        if (comparison !== 0) {
+          return comparison
+        }
       }
       return a.originalIndex - b.originalIndex
     })
