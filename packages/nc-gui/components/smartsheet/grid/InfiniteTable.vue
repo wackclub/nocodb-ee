@@ -1956,7 +1956,7 @@ watch(
                       Row moved
 
                       <NcTooltip>
-                        <template #title> This row will move to its new position when you select another row </template>
+                        <template #title> This record will move to a new position when you click outside of it. </template>
 
                         <GeneralIcon icon="info" class="w-4 h-4 text-gray-800" />
                       </NcTooltip>
@@ -2751,6 +2751,7 @@ watch(
 }
 
 .invalid-row {
+  @apply transition-all duration-500 transform;
   position: relative;
   z-index: 10000;
 

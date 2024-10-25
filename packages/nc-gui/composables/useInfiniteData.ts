@@ -956,10 +956,8 @@ export function useInfiniteData(args: {
         cachedRows: cachedRows.value,
       })
 
-      if (needsResorting) {
-        const newRow = cachedRows.value.get(row.rowMeta.rowIndex!)
-        newRow.rowMeta.isRowOrderUpdated = needsResorting
-      }
+      const newRow = cachedRows.value.get(row.rowMeta.rowIndex!)
+      if (newRow) newRow.rowMeta.isRowOrderUpdated = needsResorting
     }
     callbacks?.syncVisibleData?.()
   }
