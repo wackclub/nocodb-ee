@@ -836,8 +836,15 @@ async function saveEmptyRow(rowObj: Row) {
   await updateOrSaveRow?.(rowObj)
 }
 
+let disableWatch = false
+
 async function addEmptyRow(row?: number, skipUpdate: boolean = false) {
   const rowObj = callAddEmptyRow?.(row)
+  disableWatch = true
+  setTimeout(() => {
+    disableWatch = false
+  }, 500)
+
   if (!skipUpdate && rowObj) {
     await saveEmptyRow(rowObj)
   }
@@ -1519,6 +1526,7 @@ defineExpose({
 watch(
   () => activeCell.row,
   (newVal, oldVal) => {
+    if (disableWatch) return
     if (oldVal !== newVal) {
       clearInvalidRows?.()
       if (rowSortRequiredRows.value.length) {
