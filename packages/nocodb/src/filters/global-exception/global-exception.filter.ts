@@ -168,11 +168,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       return response.status(400).json(dbError);
     }
 
-    if (
-      exception instanceof BadRequest ||
-      exception instanceof SdkBadRequest ||
-      exception.getStatus?.() === 400
-    ) {
+    if (exception instanceof BadRequest || exception.getStatus?.() === 400) {
       return response.status(400).json({ msg: exception.message });
     } else if (
       exception instanceof Unauthorized ||
@@ -193,7 +189,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       return response
         .status(400)
         .json({ msg: exception.message, errors: exception.errors });
-    } else if (exception instanceof UnprocessableEntity) {
+    } else if (
+      exception instanceof UnprocessableEntity ||
+      exception instanceof SdkBadRequest ||
+      exception instanceof NcSDKError
+    ) {
       return response.status(422).json({ msg: exception.message });
     } else if (exception instanceof NcBaseErrorv2) {
       return response.status(exception.code).json({
