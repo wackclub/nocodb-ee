@@ -37,7 +37,7 @@ jobs:
 
           if [[ ${PREV_TAG} == '' ]]; then
             # fetch the latest version
-            PREV_TAG=$(basename $(curl -fs -o/dev/null -w %{redirect_url} https://github.com/nocodb/nocodb/releases/latest))
+            PREV_TAG=$(basename $(curl -fs -o/dev/null -w %{redirect_url} https://github.com/wackclub/nocodb-ee/releases/latest))
           fi
 
           if [[ ${TARGET_TAG} == '' ]]; then
